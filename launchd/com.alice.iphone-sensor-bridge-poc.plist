@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.alice.iphone-sensor-bridge-poc</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>/Users/anxianjingya/Projects/iphone-sensor-bridge-poc/server.js</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/anxianjingya/Projects/iphone-sensor-bridge-poc</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOSTS</key>
+    <string>127.0.0.1,0.0.0.0</string>
+    <key>PORT</key>
+    <string>8765</string>
+    <key>INBOX</key>
+    <string>/Users/anxianjingya/Desktop/iphone-sensor-inbox-v2</string>
+    <key>BRIDGE_TOKEN</key>
+    <string>sensor-bridge-dev-token</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/anxianjingya/Library/Logs/iphone-sensor-bridge-poc.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/anxianjingya/Library/Logs/iphone-sensor-bridge-poc.err.log</string>
+</dict>
+</plist>
