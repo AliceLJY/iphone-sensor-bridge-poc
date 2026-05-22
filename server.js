@@ -423,6 +423,10 @@ function makeServer() {
 
 for (const host of HOSTS) {
   const server = makeServer();
+  // 大文件经 Tailscale 慢速上传可能超过 Node 默认 5min requestTimeout 被掐断
+  // （手机端表现为 "Failed to fetch" + 文件未落盘）。关掉超时让慢上传跑完。
+  server.requestTimeout = 0;
+  server.headersTimeout = 0;
   server.listen(PORT, host, () => {
     console.log(`Phone File Drop listening on http://${host}:${PORT}`);
     console.log(`Saving uploads to ${INBOX}`);
