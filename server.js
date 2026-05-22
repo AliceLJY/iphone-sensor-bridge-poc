@@ -13,7 +13,7 @@ const TOKEN = process.env.BRIDGE_TOKEN || "sensor-bridge-dev-token";
 const INBOX = process.env.INBOX || path.join(os.homedir(), "Desktop", "iphone-sensor-inbox");
 const META_DIR = path.join(INBOX, ".meta");
 const MAX_BODY = Number(process.env.MAX_BODY || 200 * 1024 * 1024);
-const APP_VERSION = "v7";
+const APP_VERSION = "v8";
 const RATE_WINDOW_MS = 60 * 1000;
 const RATE_MAX = 60;
 
@@ -224,6 +224,12 @@ function page() {
   </section>
 
   <section>
+    <strong>发送一段文字</strong>
+    <textarea id="textInput" placeholder="输入或粘贴一大段文字，直接发到 Mac 收件箱"></textarea>
+    <button id="sendText">发送文字到 Mac</button>
+  </section>
+
+  <section>
     <strong>Result</strong>
     <div id="log"></div>
   </section>
@@ -297,6 +303,26 @@ document.getElementById("copyPrompt").onclick = async () => {
 document.getElementById("photo").onchange = (event) => upload("photo", event.target.files).catch((err) => log("照片上传失败: " + err.message, "bad"));
 document.getElementById("files").onchange = (event) => upload("file", event.target.files).catch((err) => log("文件上传失败: " + err.message, "bad"));
 
+document.getElementById("sendText").onclick = async () => {
+  const el = document.getElementById("textInput");
+  const text = el.value.trim();
+  if (!text) { log("文字是空的，先输入点内容", "bad"); return; }
+  try {
+    const res = await fetch("/api/text", {
+      method: "POST",
+      headers: { "x-bridge-token": TOKEN, "content-type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error((data.error || res.statusText) + " (HTTP " + res.status + ")");
+    log("文字已发送: " + data.saved[0].name + " (" + data.saved[0].size + " bytes)", "ok");
+    log("下一步：复制页面上的 cc-remote 指令。");
+    el.value = "";
+  } catch (err) {
+    log("文字发送失败: " + err.message, "bad");
+  }
+};
+
 updateCaps();
 document.getElementById("ccPrompt").value = CC_PROMPT;
 fetch("/api/items")
@@ -343,6 +369,38 @@ async function handlePost(req, res) {
       }
 
       return json(res, 200, { ok: true, saved });
+    }
+
+    if (req.url === "/api/text") {
+      const body = await readBody(req, 5 * 1024 * 1024);
+      let text = "";
+      const ct = (req.headers["content-type"] || "").toLowerCase();
+      if (ct.includes("application/json")) {
+        try { text = String(JSON.parse(body.toString("utf8")).text || ""); } catch { text = ""; }
+      } else if (ct.includes("application/x-www-form-urlencoded")) {
+        text = new URLSearchParams(body.toString("utf8")).get("text") || "";
+      } else {
+        text = body.toString("utf8");
+      }
+      text = text.trim();
+      if (!text) return json(res, 400, { error: "empty_text" });
+
+      const id = `${nowStamp()}_text_${crypto.randomBytes(4).toString("hex")}`;
+      const name = `${id}.txt`;
+      const size = Buffer.byteLength(text, "utf8");
+      fs.writeFileSync(path.join(INBOX, name), text, "utf8");
+      fs.writeFileSync(path.join(META_DIR, `${name}.json`), JSON.stringify({
+        id,
+        kind: "text",
+        name,
+        mime: "text/plain",
+        size,
+        receivedAt: new Date().toISOString(),
+        remote: clientKey(req),
+        userAgent: req.headers["user-agent"] || "",
+      }, null, 2));
+
+      return json(res, 200, { ok: true, saved: [{ name, mime: "text/plain", size }] });
     }
 
     notFound(res);
