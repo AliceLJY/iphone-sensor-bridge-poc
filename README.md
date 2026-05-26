@@ -34,11 +34,7 @@ npm run launchd:install
 
 This installs `com.alice.iphone-sensor-bridge-poc` as a user LaunchAgent.
 
-## GitHub
+## Status
 
-This repo has no remote configured yet. After GitHub auth is available, add the remote and push:
-
-```sh
-git remote add origin <repo-url>
-git push -u origin main
-```
+PoC — runs on the Mac mini as `com.alice.iphone-sensor-bridge-poc` LaunchAgent.
+Not under active development; works for the original use case (iPhone Safari → Mac inbox over LAN/Tailscale).
