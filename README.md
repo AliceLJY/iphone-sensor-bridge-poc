@@ -37,4 +37,13 @@ This installs `com.alice.iphone-sensor-bridge-poc` as a user LaunchAgent.
 ## Status
 
 PoC — runs on the Mac mini as `com.alice.iphone-sensor-bridge-poc` LaunchAgent.
-Not under active development; works for the original use case (iPhone Safari → Mac inbox over LAN/Tailscale).
+Not under active development; works for the original use cases (see below).
+
+## Why this exists
+
+AirDrop has two gaps this bridge fills:
+
+1. **Non-Apple phones / borrowed devices** — AirDrop only works between Apple devices logged into iCloud. A browser-based drop works from any device that can open a URL.
+2. **The target Mac isn't physically nearby** — AirDrop requires Bluetooth/Wi-Fi proximity. My Mac mini lives at home; when I'm out and want to drop a photo straight to its `~/Desktop` (so future-me at the desk can pick it up), AirDrop can't reach it but Tailscale can.
+
+So: open Tailscale URL on phone → upload → file lands on the target Mac's desktop. No iCloud round-trip, no cables, works across vendors.
