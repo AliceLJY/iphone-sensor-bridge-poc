@@ -88,38 +88,35 @@ function readBody(req, limit) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let total = 0;
-    let tooLarge = false;
+    let settled = false;
+    const fail = (err) => {
+      if (settled) return;
+      settled = true;
+      reject(err);
+      req.destroy();
+    };
     req.on("data", (chunk) => {
+      if (settled) return;
       total += chunk.length;
       if (total > limit) {
-        tooLarge = true;
+        // 超限立即中断，不再收完整个 body（慢链路上省手机流量与时间）
+        fail(Object.assign(new Error(`body_too_large_${Math.round(limit / 1024 / 1024)}MB_limit`), { statusCode: 413 }));
         return;
       }
       chunks.push(chunk);
     });
     req.on("end", () => {
-      if (tooLarge) {
-        reject(Object.assign(new Error(`body_too_large_${Math.round(limit / 1024 / 1024)}MB_limit`), { statusCode: 413 }));
-        return;
-      }
+      if (settled) return;
+      settled = true;
       resolve(Buffer.concat(chunks));
     });
-    req.on("error", reject);
+    req.on("error", fail);
   });
 }
 
 function safeName(name) {
   const base = path.basename(name || "upload.bin");
   return base.replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 100) || "upload.bin";
-}
-
-function allowedMime(mime) {
-  return /^image\//.test(mime)
-    || /^audio\//.test(mime)
-    || /^video\//.test(mime)
-    || mime === "application/pdf"
-    || mime === "text/plain"
-    || mime === "application/octet-stream";
 }
 
 function parseMultipart(req, body) {
@@ -164,16 +161,28 @@ function parseMultipart(req, body) {
 }
 
 function latestItems() {
-  return fs.readdirSync(INBOX)
+  let names;
+  try {
+    names = fs.readdirSync(INBOX);
+  } catch {
+    return [];
+  }
+  return names
     .filter((name) => !name.startsWith("."))
     .sort()
     .reverse()
     .slice(0, 30)
     .map((name) => {
-      const file = path.join(INBOX, name);
-      const stat = fs.statSync(file);
-      return { name, size: stat.size, modified: stat.mtime.toISOString() };
-    });
+      // 单个坏条目（坏 symlink / 权限 / readdir-stat race）不应拖垮整个请求
+      try {
+        const stat = fs.statSync(path.join(INBOX, name));
+        if (!stat.isFile()) return null;
+        return { name, size: stat.size, modified: stat.mtime.toISOString() };
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
 }
 
 function page() {
@@ -238,8 +247,20 @@ function page() {
 <script>
 const TOKEN = ${JSON.stringify(TOKEN)};
 const APP_VERSION = ${JSON.stringify(APP_VERSION)};
-const CC_PROMPT = ${JSON.stringify(ccPrompt)};
+const INBOX = ${JSON.stringify(INBOX)};
+const BASE_PROMPT = ${JSON.stringify(ccPrompt)};
+let CC_PROMPT = BASE_PROMPT;
 const logEl = document.getElementById("log");
+
+function buildPrompt(names) {
+  if (!names || !names.length) return BASE_PROMPT;
+  return "收件箱：" + INBOX + "\\n给 cc-remote：读取 mini 收件箱里这次刚上传的文件，帮我处理：\\n  " + names.join("\\n  ");
+}
+
+function applyPrompt(names) {
+  CC_PROMPT = buildPrompt(names);
+  document.getElementById("ccPrompt").value = CC_PROMPT;
+}
 
 function log(message, cls) {
   const line = document.createElement("div");
@@ -279,8 +300,14 @@ async function uploadForm(form) {
     data = { error: text || res.statusText };
   }
   if (!res.ok) throw new Error((data.error || res.statusText) + " (HTTP " + res.status + ")");
-  log("上传成功: " + data.saved.map((item) => item.name).join(", "), "ok");
-  log("下一步：复制页面上的 cc-remote 指令。");
+  const names = (data.saved || []).map((item) => item.name);
+  if (!names.length) {
+    log("没有文件被保存（可能选了空文件）", "bad");
+    return data;
+  }
+  applyPrompt(names);
+  log("上传成功: " + names.join(", "), "ok");
+  log("下一步：复制下面已更新的 cc-remote 指令（已含本次文件名）。");
   return data;
 }
 
@@ -315,8 +342,9 @@ document.getElementById("sendText").onclick = async () => {
     });
     const data = await res.json();
     if (!res.ok) throw new Error((data.error || res.statusText) + " (HTTP " + res.status + ")");
+    applyPrompt(data.saved.map((item) => item.name));
     log("文字已发送: " + data.saved[0].name + " (" + data.saved[0].size + " bytes)", "ok");
-    log("下一步：复制页面上的 cc-remote 指令。");
+    log("下一步：复制下面已更新的 cc-remote 指令（已含本次文件名）。");
     el.value = "";
   } catch (err) {
     log("文字发送失败: " + err.message, "bad");
@@ -340,15 +368,22 @@ async function handlePost(req, res) {
 
   try {
     if (req.url === "/api/upload") {
+      // 早拒：超限的上传不必收完整个 body 再报错
+      const declared = Number(req.headers["content-length"] || 0);
+      if (declared > MAX_BODY) {
+        return json(res, 413, { error: `body_too_large_${Math.round(MAX_BODY / 1024 / 1024)}MB_limit` });
+      }
+
       const body = await readBody(req, MAX_BODY);
       const parsed = parseMultipart(req, body);
       const kind = safeName(parsed.fields.kind || "upload");
+
+      // 任意文件类型都收（File Drop 不该只接受图片/音视频）；空 part 直接忽略。
+      // 先过滤再统一写入，避免"前 N 个已落盘、第 N+1 个出错却报失败"的失真反馈。
+      const files = parsed.files.filter((file) => file.data.length);
       const saved = [];
 
-      for (const file of parsed.files) {
-        if (!allowedMime(file.mime)) return json(res, 415, { error: "unsupported_mime", mime: file.mime });
-        if (!file.data.length) continue;
-
+      for (const file of files) {
         const id = `${nowStamp()}_${kind}_${crypto.randomBytes(4).toString("hex")}`;
         const name = `${id}_${file.filename}`;
         const out = path.join(INBOX, name);
@@ -412,12 +447,18 @@ async function handlePost(req, res) {
 function makeServer() {
   return http.createServer(async (req, res) => {
     console.log(`${new Date().toISOString()} ${req.method} ${req.url} ${clientKey(req)}`);
-  const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
-  if (req.method === "GET" && url.pathname === "/") return html(res, page());
-  if (req.method === "GET" && url.pathname === "/api/health") return json(res, 200, { ok: true, inbox: INBOX });
-  if (req.method === "GET" && url.pathname === "/api/items") return json(res, 200, { ok: true, inbox: INBOX, items: latestItems() });
-  if (req.method === "POST") return handlePost(req, res);
-  notFound(res);
+    try {
+      const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+      if (req.method === "GET" && url.pathname === "/") return html(res, page());
+      if (req.method === "GET" && url.pathname === "/api/health") return json(res, 200, { ok: true, inbox: INBOX });
+      if (req.method === "GET" && url.pathname === "/api/items") return json(res, 200, { ok: true, inbox: INBOX, items: latestItems() });
+      if (req.method === "POST") return handlePost(req, res);
+      notFound(res);
+    } catch (err) {
+      // 任何 GET 处理异常都不该掀翻常驻进程（KeepAlive 会重启，但崩溃-重启循环本身是隐患）
+      console.error(`${new Date().toISOString()} handler error ${req.method} ${req.url}: ${err && err.message}`);
+      if (!res.headersSent) json(res, 500, { error: "server_error" });
+    }
   });
 }
 
