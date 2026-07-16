@@ -4,33 +4,30 @@
 <dict>
   <key>Label</key>
   <string>com.alice.iphone-sensor-bridge-poc</string>
-
   <key>ProgramArguments</key>
   <array>
     <string>/opt/homebrew/bin/node</string>
     <string>/Users/USER/Projects/iphone-sensor-bridge-poc/server.js</string>
   </array>
-
   <key>WorkingDirectory</key>
   <string>/Users/USER/Projects/iphone-sensor-bridge-poc</string>
-
   <key>EnvironmentVariables</key>
   <dict>
     <key>HOSTS</key>
-    <string>127.0.0.1,0.0.0.0</string>
+    <string>0.0.0.0</string>
     <key>PORT</key>
     <string>8765</string>
     <key>INBOX</key>
     <string>/Users/USER/Desktop/iphone-sensor-inbox-v2</string>
-    <key>BRIDGE_TOKEN</key>
-    <string>sensor-bridge-dev-token</string>
+    <key>TRUST_PROXY</key>
+    <string>false</string>
+    <key>BRIDGE_TOKEN_FILE</key>
+    <string>/Users/USER/.config/iphone-sensor-bridge-poc/token</string>
   </dict>
-
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
   <true/>
-
   <key>StandardOutPath</key>
   <string>/Users/USER/Library/Logs/iphone-sensor-bridge-poc.log</string>
   <key>StandardErrorPath</key>

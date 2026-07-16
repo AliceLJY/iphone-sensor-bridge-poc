@@ -1,12 +1,13 @@
 {
   "name": "iphone-sensor-bridge-poc",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Local phone-to-Mac file drop prototype over a browser-accessible HTTP bridge.",
   "main": "server.js",
   "scripts": {
-    "start": "HOSTS=127.0.0.1,0.0.0.0 PORT=8765 INBOX=$HOME/Desktop/iphone-sensor-inbox-v2 node server.js",
-    "check": "node --check server.js",
+    "start": "node server.js",
+    "check": "node --check server.js && node --check test/server.test.js && bash -n scripts/install-launchd.sh",
+    "test": "node --test",
     "launchd:install": "bash scripts/install-launchd.sh"
   },
   "engines": {
