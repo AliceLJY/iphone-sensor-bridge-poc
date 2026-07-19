@@ -10,7 +10,7 @@
 - 旧的 `x-bridge-token` 请求头不再接受。
 - 只要监听地址里有一个不是 loopback，启动时就必须通过 `BRIDGE_TOKEN` 或 `BRIDGE_TOKEN_FILE` 提供至少 32 字符、可用于 Bearer 的 Token，否则服务拒绝启动。仓库内不再提供固定或可预测的默认 Token。
 - 网页要求用户手动输入 Token，只在当前浏览器标签页会话的 `sessionStorage` 中保留；Token 不进入 URL、HTML 或服务端生成的 JavaScript。
-- 默认忽略 `X-Forwarded-For`。只有服务确实位于可信反向代理之后，而且代理会覆盖该请求头时，才设置 `TRUST_PROXY=true`。
+- 默认忽略 `X-Forwarded-For`。只有服务确实位于可信反向代理之后，而且代理会用已验证的客户端地址覆盖该请求头，或追加它直接观察到的客户端地址时，才设置 `TRUST_PROXY=true`。限流使用最右侧的有效地址，标准追加模式下，客户端伪造在左侧的值不能绕过限流。原样透传客户端请求头的代理不安全，不能启用该选项。
 
 Tailscale 和 Bearer Token 管的是两层边界：Tailscale 决定哪些设备能连到这个 HTTP 服务，Token 决定哪些请求能查看收件箱信息或投递内容。不要把端口直接暴露到公网。直接走局域网时仍是明文 HTTP，只应在可信局域网或 Tailscale 路径中使用。
 
@@ -27,7 +27,7 @@ Tailscale 和 Bearer Token 管的是两层边界：Tailscale 决定哪些设备�
 npm start
 ```
 
-默认地址为 `127.0.0.1:8765`，默认收件箱为 `~/Desktop/iphone-sensor-inbox`。
+默认地址为 `127.0.0.1:8765`，默认收件箱为 `~/Desktop/iphone-sensor-inbox-v2`。
 
 ## 局域网或 Tailscale 运行
 
@@ -63,17 +63,17 @@ npm start
 npm run launchd:install
 ```
 
-非交互安装时，可由本机 secret store 通过进程环境传入 `BRIDGE_TOKEN`；还可用 `BRIDGE_LISTEN_HOSTS` 指定确切的 Tailscale 或局域网监听地址，覆盖 plist 模板默认值。安装脚本不会打印 Token，也不会把它放进进程参数。运行该命令会改变正在运行的 LaunchAgent，因此只做代码审查时不要执行。
+非交互安装时，可由本机 secret store 通过进程环境传入 `BRIDGE_TOKEN`；还可用 `BRIDGE_LISTEN_HOSTS`、`BRIDGE_INBOX`、`BRIDGE_NODE_BIN` 覆盖监听地址、收件箱或安装脚本自动找到的 Node 可执行文件，路径类覆盖值必须是绝对路径。仓库内的 plist 是可移植模板，安装脚本会按当前机器填入用户目录、仓库、可执行文件和日志路径。脚本不会打印 Token，也不会把它放进进程参数。运行该命令会改变正在运行的 LaunchAgent，因此只做代码审查时不要执行。
 
 ## 配置项
 
 - `HOSTS`：逗号分隔的监听地址，默认 `127.0.0.1`。
 - `PORT`：默认 `8765`。
-- `INBOX`：投递目录，默认 `~/Desktop/iphone-sensor-inbox`。
+- `INBOX`：投递目录，默认 `~/Desktop/iphone-sensor-inbox-v2`。
 - `BRIDGE_TOKEN`：直接提供 Token；存在非 loopback 监听地址时至少 32 字符。
 - `BRIDGE_TOKEN_FILE`：launchd 推荐的 Token 来源；必须是当前用户拥有、权限为 `600` 的普通文件。
 - `MAX_BODY`：单次上传字节上限，默认 200 MiB。
-- `TRUST_PROXY`：默认 false；只在可信且会覆盖转发头的反向代理后启用。
+- `TRUST_PROXY`：默认 false；只在直接访问已限制到可信反向代理，且代理会覆盖转发地址或追加它直接观察到的客户端地址时启用。
 
 ## 验证
 
@@ -91,6 +91,8 @@ curl -H 'Authorization: Bearer <从本机-secret-store读取的-token>' \
 ```
 
 CI 会在 Node.js 18、20、22 上运行语法检查和关键行为测试。
+
+配置多个 `HOSTS` 时，所有地址都监听成功才算启动成功。任一地址绑定失败，服务会关闭已经打开的监听并以非零状态退出，让 launchd 重启，避免留下只开放部分地址的半残服务。
 
 ## GitHub remote
 

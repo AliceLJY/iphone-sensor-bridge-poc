@@ -44,7 +44,7 @@ function loadConfig(env = process.env) {
     port: Number(env.PORT || 8765),
     token: inlineToken || (tokenFile ? readTokenFile(tokenFile) : ""),
     tokenFile,
-    inbox: env.INBOX || path.join(os.homedir(), "Desktop", "iphone-sensor-inbox"),
+    inbox: env.INBOX || path.join(os.homedir(), "Desktop", "iphone-sensor-inbox-v2"),
     maxBody: Number(env.MAX_BODY || 200 * 1024 * 1024),
     trustProxy: parseBoolean(env.TRUST_PROXY, "TRUST_PROXY"),
     rateWindowMs: RATE_WINDOW_MS,
@@ -140,8 +140,11 @@ function clientKey(req, trustProxy = false) {
   const header = req.headers["x-forwarded-for"];
   const raw = Array.isArray(header) ? header[0] : header;
   if (typeof raw !== "string") return remoteAddress;
-  const forwarded = raw.split(",", 1)[0].trim();
-  return forwarded ? forwarded.slice(0, 200) : remoteAddress;
+  // A proxy that appends instead of overwriting leaves attacker-controlled
+  // values on the left. The rightmost valid address is the peer supplied by
+  // the trusted proxy and cannot be displaced by a prefixed spoofed value.
+  const forwarded = raw.split(",").at(-1).trim();
+  return net.isIP(forwarded) ? forwarded : remoteAddress;
 }
 
 function createRateLimiter({ windowMs, max, trustProxy = false, now = () => Date.now() }) {
@@ -194,13 +197,14 @@ function readBody(req, limit) {
       if (settled) return;
       settled = true;
       reject(err);
-      req.destroy();
     };
     req.on("data", (chunk) => {
       if (settled) return;
       total += chunk.length;
       if (total > limit) {
-        // 超限立即中断，不再收完整个 body（慢链路上省手机流量与时间）
+        // Keep the socket alive long enough for handlePost to return a real 413.
+        // The data listener stays attached but stops buffering any later chunks;
+        // Connection: close tells the client to stop sending after the response.
         fail(Object.assign(new Error(`body_too_large_${Math.round(limit / 1024 / 1024)}MB_limit`), { statusCode: 413 }));
         return;
       }
@@ -248,9 +252,15 @@ function parseMultipart(req, body) {
     const mime = typeMatch ? typeMatch[1].trim().toLowerCase() : "text/plain";
 
     if (filenameMatch && filenameMatch[1]) {
+      const latin1Name = filenameMatch[1];
+      const utf8Name = Buffer.from(latin1Name, "latin1").toString("utf8");
+      const originalName = (utf8Name.includes("\uFFFD") ? latin1Name : utf8Name)
+        .replace(/[\u0000-\u001f\u007f]/g, "")
+        .slice(0, 500);
       files.push({
         field: name,
-        filename: safeName(filenameMatch[1]),
+        filename: safeName(originalName),
+        originalName,
         mime,
         data: Buffer.from(data, "latin1"),
       });
@@ -565,7 +575,7 @@ async function handlePost(req, res, pathname, config) {
         fs.writeFileSync(meta, JSON.stringify({
           id,
           kind,
-          originalName: file.filename,
+          originalName: file.originalName,
           name,
           mime: file.mime,
           size: file.data.length,
@@ -626,7 +636,8 @@ async function handlePost(req, res, pathname, config) {
   } catch (err) {
     if (res.headersSent || res.destroyed) return;
     const status = err.statusCode || 500;
-    json(res, status, { error: status >= 500 ? "server_error" : (err.message || "bad_request") });
+    const headers = status === 413 ? { connection: "close" } : {};
+    json(res, status, { error: status >= 500 ? "server_error" : (err.message || "bad_request") }, headers);
   }
 }
 
@@ -681,42 +692,69 @@ function createBridge(config, logger = console) {
   return { config, handler, limiter, makeServer };
 }
 
-function startServers(config = loadConfig(), logger = console) {
+function listen(server, port, host) {
+  return new Promise((resolve, reject) => {
+    const onError = (err) => {
+      server.off("listening", onListening);
+      reject(err);
+    };
+    const onListening = () => {
+      server.off("error", onError);
+      resolve();
+    };
+    server.once("error", onError);
+    server.once("listening", onListening);
+    server.listen(port, host);
+  });
+}
+
+function closeServer(server) {
+  if (!server.listening) return Promise.resolve();
+  return new Promise((resolve) => {
+    server.close(() => resolve());
+    // server.close() stops new accepts but waits for active requests. Startup
+    // rollback must finish even if traffic reached an earlier HOST before a
+    // later bind failed, otherwise the process remains alive in a partial
+    // state and launchd never gets the nonzero exit.
+    if (typeof server.closeAllConnections === "function") {
+      server.closeAllConnections();
+    }
+  });
+}
+
+async function startServers(config = loadConfig(), logger = console) {
   const bridge = createBridge(config, logger);
   const servers = [];
 
-  for (const host of config.hosts) {
-    const server = bridge.makeServer();
-    servers.push(server);
-    server.listen(config.port, host, () => {
+  try {
+    for (const host of config.hosts) {
+      const server = bridge.makeServer();
+      servers.push(server);
+      await listen(server, config.port, host);
       logger.log(`Phone File Drop listening on http://${host}:${config.port}`);
       logger.log(`Saving uploads to ${config.inbox}`);
-    });
-    server.on("error", (err) => {
-      logger.error(`listen failed for ${host}:${config.port}`, err);
-      process.exitCode = 1;
-      for (const candidate of servers) {
-        if (candidate !== server && candidate.listening) candidate.close();
-      }
-    });
+    }
+  } catch (err) {
+    logger.error(`listen failed; closing every listener: ${err.message}`);
+    await Promise.all(servers.map(closeServer));
+    throw err;
   }
 
   return servers;
 }
 
 if (require.main === module) {
-  try {
-    startServers();
-  } catch (err) {
+  startServers().catch((err) => {
     console.error(`startup refused: ${err.message}`);
     process.exitCode = 1;
-  }
+  });
 }
 
 module.exports = {
   APP_VERSION,
   checkToken,
   clientKey,
+  closeServer,
   createBridge,
   createRateLimiter,
   isLoopbackHost,

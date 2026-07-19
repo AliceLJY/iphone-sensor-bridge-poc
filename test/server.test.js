@@ -11,6 +11,7 @@ const path = require("node:path");
 
 const {
   clientKey,
+  closeServer,
   createBridge,
   createRateLimiter,
   isLoopbackHost,
@@ -19,6 +20,7 @@ const {
   readBody,
   readTokenFile,
   safeName,
+  startServers,
   validateConfig,
 } = require("../server");
 
@@ -232,7 +234,7 @@ test("unauthenticated page is a credential shell and protected APIs require Bear
   });
 });
 
-test("readBody aborts the request as soon as the streaming limit is exceeded", async () => {
+test("readBody rejects without destroying the response socket when the streaming limit is exceeded", async () => {
   const req = new EventEmitter();
   let destroyed = false;
   req.destroy = () => { destroyed = true; };
@@ -244,7 +246,42 @@ test("readBody aborts the request as soon as the streaming limit is exceeded", a
     assert.equal(err.statusCode, 413);
     return true;
   });
-  assert.equal(destroyed, true);
+  assert.equal(destroyed, false, "the response socket must remain available for the 413 response");
+});
+
+test("chunked uploads receive a reachable 413 before the request body ends", { timeout: 3_000 }, async () => {
+  const config = testConfig({ maxBody: 4 });
+  await withServer(config, async (server) => {
+    const response = await new Promise((resolve, reject) => {
+      const address = server.address();
+      const req = http.request({
+        host: "127.0.0.1",
+        port: address.port,
+        method: "POST",
+        path: "/api/upload",
+        headers: {
+          authorization: `Bearer ${TEST_TOKEN}`,
+          "content-type": "application/octet-stream",
+        },
+      }, (res) => {
+        const chunks = [];
+        res.on("data", (chunk) => chunks.push(chunk));
+        res.on("end", () => resolve({
+          status: res.statusCode,
+          headers: res.headers,
+          body: Buffer.concat(chunks).toString("utf8"),
+        }));
+      });
+      req.on("error", reject);
+      req.flushHeaders();
+      req.write(Buffer.alloc(5));
+      // Deliberately do not call req.end(): the server must answer as soon as
+      // the streaming limit is crossed, rather than waiting for the body end.
+    });
+    assert.equal(response.status, 413);
+    assert.equal(response.headers.connection, "close");
+    assert.match(JSON.parse(response.body).error, /body_too_large/);
+  });
 });
 
 test("multipart parsing keeps file bytes and safeName removes traversal syntax", () => {
@@ -267,6 +304,7 @@ test("multipart parsing keeps file bytes and safeName removes traversal syntax",
   assert.equal(parsed.fields.kind, "camera roll");
   assert.equal(parsed.files.length, 1);
   assert.equal(parsed.files[0].filename, "A_weird_.txt");
+  assert.equal(parsed.files[0].originalName, "../../A weird?.txt");
   assert.equal(parsed.files[0].data.toString("utf8"), "hello");
   assert.equal(safeName("..\\..\\secret name?.txt"), "secret_name_.txt");
   assert.equal(safeName(".."), "upload.bin");
@@ -277,6 +315,82 @@ test("multipart parsing keeps file bytes and safeName removes traversal syntax",
   );
 });
 
+test("multipart metadata preserves a bounded Unicode original name", () => {
+  const boundary = "unicode-filename";
+  const originalName = "假期照片.jpg";
+  const headerName = Buffer.from(originalName, "utf8").toString("latin1");
+  const body = Buffer.from(
+    `--${boundary}\r\n` +
+    `Content-Disposition: form-data; name="file"; filename="${headerName}"\r\n` +
+    "Content-Type: image/jpeg\r\n\r\n" +
+    "image-bytes\r\n" +
+    `--${boundary}--\r\n`,
+    "latin1",
+  );
+  const parsed = parseMultipart({
+    headers: { "content-type": `multipart/form-data; boundary=${boundary}` },
+  }, body);
+
+  assert.equal(parsed.files[0].originalName, originalName);
+  assert.equal(parsed.files[0].filename, "_.jpg");
+});
+
+test("multi-host startup closes listeners when any bind fails", async () => {
+  const portFinder = http.createServer();
+  await new Promise((resolve, reject) => {
+    portFinder.once("error", reject);
+    portFinder.listen(0, "127.0.0.1", resolve);
+  });
+  const port = portFinder.address().port;
+  await new Promise((resolve) => portFinder.close(resolve));
+  const config = testConfig({
+    // A duplicate address is synthetic but portable: the first listener opens,
+    // then the second must fail on the same address and port.
+    hosts: ["127.0.0.1", "127.0.0.1"],
+    port,
+  });
+  const messages = [];
+
+  await assert.rejects(
+    startServers(config, { log() {}, error(message) { messages.push(message); } }),
+    (err) => err && err.code === "EADDRINUSE",
+  );
+  assert.equal(messages.some((message) => message.includes("closing every listener")), true);
+
+  const probe = http.createServer();
+  await new Promise((resolve, reject) => {
+    probe.once("error", reject);
+    probe.listen(port, "127.0.0.1", resolve);
+  });
+  await new Promise((resolve) => probe.close(resolve));
+});
+
+test("startup rollback does not wait for active requests on an earlier listener", { timeout: 3_000 }, async () => {
+  let requestSeen;
+  const seen = new Promise((resolve) => { requestSeen = resolve; });
+  const server = http.createServer(() => requestSeen());
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+
+  const address = server.address();
+  const client = http.request({
+    host: "127.0.0.1",
+    port: address.port,
+    method: "POST",
+    path: "/held-open",
+  });
+  client.on("error", () => {});
+  client.flushHeaders();
+  client.write("request remains active");
+  await seen;
+
+  await closeServer(server);
+  assert.equal(server.listening, false);
+  client.destroy();
+});
+
 test("X-Forwarded-For is ignored unless TRUST_PROXY is explicit", () => {
   const req = {
     headers: { "x-forwarded-for": "203.0.113.9, 198.51.100.4" },
@@ -285,7 +399,11 @@ test("X-Forwarded-For is ignored unless TRUST_PROXY is explicit", () => {
 
   assert.equal(clientKey(req), "100.64.0.1");
   assert.equal(clientKey(req, false), "100.64.0.1");
-  assert.equal(clientKey(req, true), "203.0.113.9");
+  assert.equal(clientKey(req, true), "198.51.100.4");
+  assert.equal(
+    clientKey({ headers: { "x-forwarded-for": "spoofed" }, socket: { remoteAddress: "100.64.0.1" } }, true),
+    "100.64.0.1",
+  );
   assert.equal(loadConfig({ TRUST_PROXY: "true" }).trustProxy, true);
   assert.throws(() => loadConfig({ TRUST_PROXY: "implicit" }), /explicit true\/false/);
 });
@@ -315,4 +433,6 @@ test("tracked configuration contains no token value", () => {
   assert.equal(tokenLine === "BRIDGE_TOKEN=", true, "tracked env example must leave BRIDGE_TOKEN empty");
   const tokenFileLine = envExample.split(/\r?\n/).find((line) => line.startsWith("BRIDGE_TOKEN_FILE="));
   assert.equal(tokenFileLine === "BRIDGE_TOKEN_FILE=", true, "tracked env example must not contain a local path");
+  assert.equal(plist.includes("/Users/"), false, "tracked plist must not contain a maintainer-specific home path");
+  assert.match(plist, /__SERVER_JS__/);
 });
