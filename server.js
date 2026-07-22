@@ -331,7 +331,7 @@ function page(maxBody) {
 
   <section>
     <strong>访问凭证</strong>
-    <p class="muted">Token 只保存在当前浏览器标签页会话的 sessionStorage；关闭该会话后需要重新输入。</p>
+    <p class="muted">Token 填一次即保存在本机浏览器；下次打开免输入，也可用带 ?token=… 的链接直接打开（会自动存好并从地址栏清掉）。换设备或想清除时点「忘记 Token」。</p>
     <input id="tokenInput" type="password" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="输入 BRIDGE_TOKEN">
     <button id="connect">连接</button>
     <button id="forgetToken">忘记 Token</button>
@@ -366,7 +366,17 @@ function page(maxBody) {
 
 <script>
 const APP_VERSION = ${JSON.stringify(APP_VERSION)};
-const SESSION_TOKEN_KEY = "phone-file-drop-token";
+const TOKEN_KEY = "phone-file-drop-token";
+{
+  // 支持 ?token=… 链接直开：存好后立刻从地址栏清掉，避免 token 留在历史记录/截图里
+  const urlToken = new URLSearchParams(location.search).get("token");
+  if (urlToken && urlToken.trim()) {
+    localStorage.setItem(TOKEN_KEY, urlToken.trim());
+    const cleaned = new URL(location.href);
+    cleaned.searchParams.delete("token");
+    history.replaceState(null, "", cleaned.pathname + cleaned.search + cleaned.hash);
+  }
+}
 let INBOX = "";
 let CC_PROMPT = "先输入 Token 并连接。";
 let connected = false;
@@ -400,7 +410,7 @@ function setConnected(value) {
 
 function authHeaders(initial) {
   const headers = new Headers(initial || {});
-  const token = sessionStorage.getItem(SESSION_TOKEN_KEY) || "";
+  const token = localStorage.getItem(TOKEN_KEY) || "";
   if (token) headers.set("authorization", "Bearer " + token);
   return headers;
 }
@@ -426,7 +436,7 @@ async function responseData(response) {
 
 async function connect() {
   const entered = tokenInput.value.trim();
-  if (entered) sessionStorage.setItem(SESSION_TOKEN_KEY, entered);
+  if (entered) localStorage.setItem(TOKEN_KEY, entered);
   tokenInput.value = "";
 
   try {
@@ -505,10 +515,10 @@ tokenInput.onkeydown = (event) => {
   if (event.key === "Enter") connect();
 };
 document.getElementById("forgetToken").onclick = () => {
-  sessionStorage.removeItem(SESSION_TOKEN_KEY);
+  localStorage.removeItem(TOKEN_KEY);
   tokenInput.value = "";
   setConnected(false);
-  log("已清除当前浏览器会话中的 Token");
+  log("已清除本机保存的 Token");
 };
 
 document.getElementById("photo").onchange = (event) => upload("photo", event.target.files).catch((err) => log("照片上传失败: " + err.message, "bad"));
@@ -536,7 +546,7 @@ document.getElementById("sendText").onclick = async () => {
 
 updateCaps();
 document.getElementById("ccPrompt").value = CC_PROMPT;
-if (sessionStorage.getItem(SESSION_TOKEN_KEY)) connect();
+if (localStorage.getItem(TOKEN_KEY)) connect();
 </script>
 </body>
 </html>`;

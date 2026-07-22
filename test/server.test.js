@@ -177,8 +177,9 @@ test("unauthenticated page is a credential shell and protected APIs require Bear
     assert.equal(root.body.includes(TEST_TOKEN), false, "GET / must not contain the server token");
     assert.equal(root.body.includes(config.inbox), false, "GET / must not expose protected inbox data");
     assert.match(root.body, /type="password"/);
-    assert.match(root.body, /sessionStorage/);
-    assert.doesNotMatch(root.body, /localStorage/);
+    assert.match(root.body, /localStorage/);
+    assert.doesNotMatch(root.body, /sessionStorage/);
+    assert.match(root.body, /replaceState/, "URL token must be scrubbed from the address bar after import");
     assert.match(root.body, /authorization/i);
     assert.doesNotMatch(root.body, /x-bridge-token/i);
     assert.match(root.headers["content-security-policy"], /frame-ancestors 'none'/);
