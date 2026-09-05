@@ -9,7 +9,7 @@
 - 配置 Token 后，其余 `/api/*` 路由都要求 `Authorization: Bearer <token>`。
 - 旧的 `x-bridge-token` 请求头不再接受。
 - 只要监听地址里有一个不是 loopback，启动时就必须通过 `BRIDGE_TOKEN` 或 `BRIDGE_TOKEN_FILE` 提供至少 32 字符、可用于 Bearer 的 Token，否则服务拒绝启动。仓库内不再提供固定或可预测的默认 Token。
-- 网页要求用户手动输入 Token，只在当前浏览器标签页会话的 `sessionStorage` 中保留；Token 不进入 URL、HTML 或服务端生成的 JavaScript。
+- 网页要求用户手动输入 Token，保存在 `localStorage` 中——跨标签页、重启浏览器都不会丢，直到点网页上的「忘记 Token」按钮清除；也支持用带 `?token=...` 的链接直接打开，存好后立刻从地址栏清掉。服务端访问日志只记录请求路径，不记录 query string。
 - 默认忽略 `X-Forwarded-For`。只有服务确实位于可信反向代理之后，而且代理会用已验证的客户端地址覆盖该请求头，或追加它直接观察到的客户端地址时，才设置 `TRUST_PROXY=true`。限流使用最右侧的有效地址，标准追加模式下，客户端伪造在左侧的值不能绕过限流。原样透传客户端请求头的代理不安全，不能启用该选项。
 
 Tailscale 和 Bearer Token 管的是两层边界：Tailscale 决定哪些设备能连到这个 HTTP 服务，Token 决定哪些请求能查看收件箱信息或投递内容。不要把端口直接暴露到公网。直接走局域网时仍是明文 HTTP，只应在可信局域网或 Tailscale 路径中使用。
@@ -53,7 +53,7 @@ set +a
 npm start
 ```
 
-手机打开局域网或 Tailscale 地址后，输入同一个 Token 再连接。关闭该浏览器标签页会话后，网页保存的 Token 会被清除。
+手机打开局域网或 Tailscale 地址后，输入同一个 Token 再连接；也可以直接打开带 `?token=...` 的链接免输入。Token 保存在 `localStorage` 中，关闭标签页不会清除，需要点网页上的「忘记 Token」按钮才会清除。
 
 ## 安装 LaunchAgent
 
